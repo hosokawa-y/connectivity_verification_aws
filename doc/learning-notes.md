@@ -18,15 +18,15 @@
 | 組織 / フォルダ | Organizations / OU | 階層構造の考え方は近い |
 | ラベル | **タグ** | ほぼ同じ。本リポジトリの `Owner=yourname` はこれ |
 | サービスアカウント | **IAM ロール** | 人ではないものに与える ID。AWS のロールは「誰かが引き受ける（assume）」形で使う |
-| IAM ロール（権限の束） | **IAM ポリシー** | ★用語が逆転している。下記 2 節を必ず読むこと |
-| サービスアカウントの権限借用（impersonation） | **AssumeRole**（STS） | 本検証の中心 |
+| IAM ロール（権限の束） | **IAM ポリシー** | ★用語が逆転している。「ロールの意味が GCP と逆」の節を必ず読むこと |
+| サービスアカウントの権限借用（impersonation） | **AssumeRole**（STS） | 本検証の中心。「STS とは」の節 |
 | SA に付ける `roles/iam.serviceAccountTokenCreator` | ロールの**信頼ポリシー** | 「誰がこの ID になりきれるか」の定義 |
-| ID トークン / アクセストークンを Bearer ヘッダで送る | **SigV4 署名** | 方式が根本的に違う。下記 4 節 |
+| ID トークン / アクセストークンを Bearer ヘッダで送る | **SigV4 署名** | 方式が根本的に違う。「SigV4 署名」の節 |
 | Cloud Run の IAM invoker | API Gateway の **`AWS_IAM` 認可** | 「IAM で認可された呼び出し元だけ通す」点は同じ |
 | Cloud Functions / Cloud Run | **Lambda** | |
 | Cloud Logging | **CloudWatch Logs** | |
 | Cloud Audit Logs | **CloudTrail** | |
-| （なし） | **ExternalId** | 下記 5 節 |
+| （なし） | **ExternalId** | 「ExternalId とは」の節 |
 
 ## 2. 最初に引っかかる罠: 「ロール」の意味が GCP と逆
 
@@ -56,7 +56,96 @@ IAM ロール xacct-verify-yourname-b-invoke-api-role
 GCP だと「SA に invoker ロールを付与」の 1 手で済むところが、AWS では
 「なりきる許可」と「できることの許可」を別々に書く必要がある。
 
-## 3. AssumeRole すると「自分が誰か」が変わる
+## 3. STS とは（AssumeRole の実行主体）
+
+**STS = AWS Security Token Service。一時的な認証情報を発行するサービス。**
+`sts:AssumeRole` も `sts:GetCallerIdentity` もこのサービスの API。
+
+### 発行されるもの
+
+```
+AccessKeyId      ASIA...            ← 一時認証情報のキー ID
+SecretAccessKey  (秘密)
+SessionToken     (秘密)             ← 一時認証情報にだけ付く
+Expiration       15 分後            ← 本検証では DurationSeconds=900
+```
+
+3 点目の `SessionToken` が一時認証情報の特徴。SigV4 署名時に
+`x-amz-security-token` ヘッダとして送られる（署名ヘッダ 3 つのうちの 1 つ）。
+
+### 本検証で使っている STS API
+
+| 呼び出し | API | 目的 |
+|---|---|---|
+| ① | `sts:AssumeRole` | B のロールの一時認証情報を取得 |
+| ② | `sts:GetCallerIdentity` | 「今の自分は誰か」を確認 |
+
+`GetCallerIdentity` は **権限が一切不要** な特殊な API で、自分が誰として
+認識されているかを返す。デバッグの起点として頻繁に使う。
+`aws sts get-caller-identity` はこのコマンドそのもの。
+
+### AssumeRole する前から STS を使っている
+
+検証結果の principal を見ると、AssumeRole の前後どちらも `sts` になっている。
+
+```
+前: arn:aws:sts::<ACCOUNT_A_ID>:assumed-role/xacct-verify-<owner>-caller-role/...
+     ^^^                        ^^^^^^^^^^^^^
+後: arn:aws:sts::<ACCOUNT_B_ID>:assumed-role/xacct-verify-<owner>-b-invoke-api-role/<owner>-verify
+```
+
+Lambda は起動時に実行ロールを STS 経由で引き受けているため、AssumeRole する前から
+すでに assumed-role セッションとして動いている。AWS では「恒久的なキーを持たず、
+ロールを引き受けて一時認証情報を得る」のが基本形で、STS はその仕組みそのもの。
+
+### ARN の書き分け
+
+```
+arn:aws:iam::<account>:role/MyRole                 ← ロールという「入れ物」
+arn:aws:sts::<account>:assumed-role/MyRole/session ← それを引き受けた「セッション」
+```
+
+サービス名の位置が `iam` と `sts` で違う。B 側の信頼ポリシーの
+`aws:PrincipalArn` 条件に 2 パターン書いているのは、環境によってどちらの形式で
+評価されるか差があるため。
+
+### 識別子の先頭 4 文字で由来が分かる
+
+| 接頭辞 | 意味 |
+|---|---|
+| `AROA` | **ロール**の一意 ID |
+| `ASIA` | **一時**認証情報のアクセスキー ID（STS 発行） |
+| `AKIA` | IAM **ユーザー**の恒久的なアクセスキー ID |
+| `AIDA` | IAM **ユーザー**の一意 ID |
+
+検証で B 側が観測した `caller` は `AROA...`、`accessKey` は `ASIA...` だった。
+これが「STS 由来の一時認証情報で呼ばれた」証跡になる。もし `AKIA` が出ていたら
+IAM ユーザーの恒久キーを使っていることになり、設計意図から外れていると分かる。
+
+### GCP との対応
+
+| GCP | AWS |
+|---|---|
+| `iamcredentials.googleapis.com` の `generateAccessToken`（SA の impersonation） | `sts:AssumeRole` |
+| `sts.googleapis.com`（Workload Identity 連携のトークン交換） | `sts:AssumeRoleWithWebIdentity` |
+| （直接の対応物は少ない） | `sts:GetCallerIdentity` |
+
+GCP では impersonation とトークン交換が別サービスに分かれているが、
+AWS はまとめて STS が担う。
+
+### 主な API
+
+| API | 用途 |
+|---|---|
+| `AssumeRole` | ロールを引き受ける（本検証で使用。クロスアカウントの基本） |
+| `GetCallerIdentity` | 自分が誰かを確認（権限不要） |
+| `AssumeRoleWithWebIdentity` | OIDC 連携。GitHub Actions から AWS を触る際の定番 |
+| `AssumeRoleWithSAML` | SAML 連携 |
+
+`AssumeRoleWithWebIdentity` は CI/CD を組むときに使う。恒久キーを CI に
+置かずに済むので、将来 GitHub Actions からデプロイする場合はこれを選ぶ。
+
+## 4. AssumeRole すると「自分が誰か」が変わる
 
 `sts:AssumeRole` は、別アカウントのロールの**一時認証情報**（15 分〜1 時間）を受け取る操作。
 受け取った後は、その認証情報を使う限り自分の principal がロール側に切り替わる。
@@ -78,7 +167,7 @@ A のアカウント ID は API Gateway のログにも出てこない。ここ�
 - `AROA...` … ロール由来の一時認証情報（今回はこれになるべき）
 - `AIDA...` … IAM ユーザーの直呼び
 
-## 4. SigV4 署名は Bearer トークンと違う
+## 5. SigV4 署名は Bearer トークンと違う
 
 GCP は「トークンを取得して `Authorization: Bearer <token>` で送る」。
 AWS の SigV4 は「**リクエストの内容から署名を計算して送る**」方式で、署名対象に以下が含まれる。
@@ -109,7 +198,7 @@ SigV4Auth(credentials, "execute-api", API_REGION).add_auth(request)
 - `x-amz-date` … 署名の時刻（ずれると失効）
 - `x-amz-security-token` … 一時認証情報を使うときに必要
 
-## 5. ExternalId とは（GCP に対応物がない）
+## 6. ExternalId とは（GCP に対応物がない）
 
 AssumeRole 時に要求できる共有シークレット。**confused deputy 問題**への対策。
 
@@ -124,7 +213,7 @@ AssumeRole 時に要求できる共有シークレット。**confused deputy 問
 本リポジトリでは B 側で `random_uuid` で自動生成し、Terraform の出力経由で A に渡している
 （両側に手で書くと値がずれて `AccessDenied` になるため）。
 
-## 6. `owner` 変数は AWS の機能ではない
+## 7. `owner` 変数は AWS の機能ではない
 
 AWS には「このリソースを誰が作ったか」を示す標準フィールドがない
 （CloudTrail を追えば分かるが、コンソールの一覧では見えない）。
@@ -145,7 +234,7 @@ xacct-verify-tanaka-caller-role
 そこで `var.owner` を導入し、リソース名・タグ・`RoleSessionName` の 3 か所に反映している。
 GCP でラベルを付けて誰のリソースか分かるようにする運用と同じ発想。
 
-## 7. 認証: `aws login` は同時に 1 アカウントしか保持できない
+## 8. 認証: `aws login` は同時に 1 アカウントしか保持できない
 
 本検証で最も時間を取られた箇所。GCP の `gcloud auth login` +
 `gcloud config configurations` のような感覚で複数アカウントを並行して持てると考えると詰まる。
@@ -218,7 +307,7 @@ content-security-policy: ... report-uri https://log.sso-portal.us-west-2.amazona
 | `sso_role_name` | **許可セット名**。`AWSReservedSSO_YourPermissionSet_<hash>` という実際のロール名から、`AWSReservedSSO_` と末尾ハッシュを除いた部分 |
 | `region` | そのプロファイルで操作するリソースのリージョン（今回 ap-northeast-1） |
 
-## 8. 検証が確認している 10 項目の意味
+## 9. 検証が確認している 10 項目の意味
 
 `../scripts/verify.sh` の出力を読むときの対応。
 
@@ -238,7 +327,7 @@ content-security-policy: ... report-uri https://log.sso-portal.us-west-2.amazona
 10 番目が重要。1〜9 が通っても、認可が無効で誰でも呼べる状態なら検証の意味がない。
 「通ること」と「通らないべきものが通らないこと」を両方見る。
 
-## 9. ステータスコードによる切り分け
+## 10. ステータスコードによる切り分け
 
 記録の 5 エラーから得られた対応表。認可の失敗は全部 403 になるので、本文で切り分ける。
 
@@ -251,7 +340,7 @@ content-security-policy: ... report-uri https://log.sso-portal.us-west-2.amazona
 | `Invalid principal in policy` | 信頼ポリシーに書いた ARN のロールが未作成（IAM は作成時に実在を検証する） |
 | `Runtime.HandlerNotFound` | ハンドラ設定 `<file>.<function>` とコードの関数名が不一致 |
 
-## 10. 実機で踏んだ制約: IAM の description は ASCII のみ
+## 11. 実機で踏んだ制約: IAM の description は ASCII のみ
 
 apply 時に次のエラーで止まった。
 
@@ -271,7 +360,7 @@ AWS はサービスごとに文字種の制約が違うので、AWS 側に渡す
 記録しているので、修正後の apply は「残り 2 件の作成 + 1 件の in-place 更新」だけで済んだ。
 **部分適用でも作り直しにならない**のが state を持つ利点。
 
-## 11. Terraform 上の注意（この構成固有）
+## 12. Terraform 上の注意（この構成固有）
 
 - **apply 順序は B → A で固定。** 信頼ポリシーの principal に未作成のロール ARN を
   直接書くと IAM が拒否する。本構成では principal を A のアカウント root にし
