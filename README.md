@@ -181,6 +181,7 @@ SSO で両アカウントが同時に有効なら一括で実行できる（B �
 env.local.example        実値のテンプレート。cp して env.local を作る（env.local は .gitignore 済み）
 doc/learning-notes.md    学習記録。GCP 経験者向けの用語対応、つまずいた点の整理
 doc/account-b-resources.md  アカウント B に作成される 14 リソースの一覧と役割
+doc/account-a-resources.md  アカウント A に作成される 5 リソースの一覧と役割
 doc/cross_acount_test.html  前回の手作業検証の記録。社内限定資料のため .gitignore 済み（ローカルのみ）
 terraform/account-b/     先に apply。API Gateway (IAM 認可) + バックエンド Lambda + AssumeRole される側のロール
 terraform/account-a/     後に apply。呼び出し元 Lambda + 実行ロール
