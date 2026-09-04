@@ -216,3 +216,38 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Terraform ---
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+tfplan
+*.tfplan
+
+# Lambda のビルド成果物 (archive_file の出力先)
+**/.build/
+
+# 検証スクリプトの出力
+out/
+
+# --- 実環境固有の値 / 社内限定資料 ---
+# 実アカウント ID や組織の SSO URL を含むため、公開される可能性を考慮して除外する
+env.local
+!env.local.example
+
+# 前任者の検証記録 (実アカウント ID・外部共有 URL を含む社内資料)。
+# 知識は doc/learning-notes.md に転記済み。
+doc/*.html
+doc/*.png
+doc/cross_acount_test_files/
