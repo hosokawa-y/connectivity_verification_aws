@@ -251,7 +251,27 @@ content-security-policy: ... report-uri https://log.sso-portal.us-west-2.amazona
 | `Invalid principal in policy` | 信頼ポリシーに書いた ARN のロールが未作成（IAM は作成時に実在を検証する） |
 | `Runtime.HandlerNotFound` | ハンドラ設定 `<file>.<function>` とコードの関数名が不一致 |
 
-## 10. Terraform 上の注意（この構成固有）
+## 10. 実機で踏んだ制約: IAM の description は ASCII のみ
+
+apply 時に次のエラーで止まった。
+
+```
+Error: creating IAM Role (xacct-verify-<owner>-b-invoke-api-role):
+  api error ValidationError: 1 validation error detected:
+  Value at 'description' failed to satisfy constraint:
+  Member must satisfy regular expression pattern: [...\u0020-\u007E\u00A1-\u00FF]*
+```
+
+IAM ロールの `description` は ASCII とラテン 1 補助しか受け付けず、日本語を入れると
+`CreateRole` が失敗する。一方 **API Gateway の `description` は日本語でも通った**。
+AWS はサービスごとに文字種の制約が違うので、AWS 側に渡す `description` は
+すべて ASCII に統一し、日本語の説明は HCL のコメントとして書くのが無難。
+
+このとき 14 リソースのうち 13 が作成済みの状態で停止したが、Terraform は state に
+記録しているので、修正後の apply は「残り 2 件の作成 + 1 件の in-place 更新」だけで済んだ。
+**部分適用でも作り直しにならない**のが state を持つ利点。
+
+## 11. Terraform 上の注意（この構成固有）
 
 - **apply 順序は B → A で固定。** 信頼ポリシーの principal に未作成のロール ARN を
   直接書くと IAM が拒否する。本構成では principal を A のアカウント root にし

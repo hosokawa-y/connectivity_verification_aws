@@ -81,8 +81,10 @@ resource "aws_lambda_function" "echo" {
 # ---------------------------------------------------------------------------
 
 resource "aws_api_gateway_rest_api" "this" {
-  name        = "${local.name_prefix}-api"
-  description = "IAM 認可付きのクロスアカウント検証用 API"
+  name = "${local.name_prefix}-api"
+  # IAM 認可付きのクロスアカウント検証用 API
+  # AWS 側の description は ASCII のみ (IAM ロールの制約に合わせて統一)
+  description = "Cross-account verification API with IAM authorization"
 
   endpoint_configuration {
     types = ["REGIONAL"]
@@ -175,8 +177,11 @@ data "aws_iam_policy_document" "cross_account_assume" {
 }
 
 resource "aws_iam_role" "cross_account" {
-  name                 = "${local.name_prefix}-invoke-api-role"
-  description          = "アカウント A の Lambda が AssumeRole して API Gateway を叩くためのロール"
+  name = "${local.name_prefix}-invoke-api-role"
+  # アカウント A の Lambda が AssumeRole して API Gateway を叩くためのロール。
+  # IAM ロールの description は ASCII のみ受け付ける (日本語を入れると
+  # CreateRole が ValidationError になる)。
+  description          = "Assumed by account A Lambda to invoke the verification API"
   assume_role_policy   = data.aws_iam_policy_document.cross_account_assume.json
   max_session_duration = 3600
 }

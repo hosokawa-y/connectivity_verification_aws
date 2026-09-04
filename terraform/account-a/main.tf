@@ -33,8 +33,10 @@ data "aws_iam_policy_document" "lambda_assume" {
 }
 
 resource "aws_iam_role" "caller" {
-  name               = local.caller_role_name
-  description        = "アカウント B のロールを AssumeRole して API Gateway を呼ぶ Lambda の実行ロール"
+  name = local.caller_role_name
+  # アカウント B のロールを AssumeRole して API Gateway を呼ぶ Lambda の実行ロール。
+  # IAM ロールの description は ASCII のみ受け付ける。
+  description        = "Lambda execution role that assumes the account B role"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
