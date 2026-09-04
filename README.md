@@ -180,6 +180,7 @@ SSO で両アカウントが同時に有効なら一括で実行できる（B �
 ```
 env.local.example        実値のテンプレート。cp して env.local を作る（env.local は .gitignore 済み）
 doc/learning-notes.md    学習記録。GCP 経験者向けの用語対応、つまずいた点の整理
+doc/sts-experiments.md   STS を理解するための実験手順（あえて失敗させる実験を含む）
 doc/account-b-resources.md  アカウント B に作成される 14 リソースの一覧と役割
 doc/account-a-resources.md  アカウント A に作成される 5 リソースの一覧と役割
 doc/cross_acount_test.html  前回の手作業検証の記録。社内限定資料のため .gitignore 済み（ローカルのみ）

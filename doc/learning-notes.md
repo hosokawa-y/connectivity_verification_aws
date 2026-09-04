@@ -59,6 +59,7 @@ GCP だと「SA に invoker ロールを付与」の 1 手で済むところが�
 ## 3. STS とは（AssumeRole の実行主体）
 
 **STS = AWS Security Token Service。一時的な認証情報を発行するサービス。**
+実際に手を動かして確認する手順は `sts-experiments.md` にまとめてある。
 `sts:AssumeRole` も `sts:GetCallerIdentity` もこのサービスの API。
 
 ### 発行されるもの
@@ -98,6 +99,23 @@ Lambda は起動時に実行ロールを STS 経由で引き受けているた�
 すでに assumed-role セッションとして動いている。AWS では「恒久的なキーを持たず、
 ロールを引き受けて一時認証情報を得る」のが基本形で、STS はその仕組みそのもの。
 
+### Lambda 実行ロールのセッション名は関数名になる
+
+`callerIdentityBeforeAssume` の ARN をよく見ると、セッション名の部分が
+Lambda の関数名になっている。
+
+```
+arn:aws:sts::<ACCOUNT_A_ID>:assumed-role/xacct-verify-<owner>-caller-role/xacct-verify-<owner>-a-caller
+                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                          ロール名                         関数名がセッション名になる
+```
+
+Lambda が実行ロールを引き受けるとき、AWS がセッション名に関数名を自動設定する。
+自分で指定した `RoleSessionName`（本構成では `<owner>-verify`）が現れるのは、
+その後に自分で呼んだ AssumeRole の結果の方。
+
+CloudTrail で「どの Lambda 関数がこの API を呼んだか」を追うときの手掛かりになる。
+
 ### ARN の書き分け
 
 ```
@@ -108,6 +126,38 @@ arn:aws:sts::<account>:assumed-role/MyRole/session ← それを引き受けた�
 サービス名の位置が `iam` と `sts` で違う。B 側の信頼ポリシーの
 `aws:PrincipalArn` 条件に 2 パターン書いているのは、環境によってどちらの形式で
 評価されるか差があるため。
+
+### RoleSessionName は自己申告なので認可に使えない
+
+`sts-experiments.md` の実験 4 で実測できる。呼び出し側が `RoleSessionName` に
+渡した文字列が、そのまま B 側の ARN 末尾と `sessionName` に現れる。
+
+```
+実験 3: AROA<ロールの一意 ID>:<owner>-verify
+実験 4: AROA<ロールの一意 ID>:experiment-4
+        ^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^
+        ロールに固定          呼び出し側が自由に決める
+```
+
+B 側は「本当にそのセッション名の主体なのか」を検証していない。**自己申告である。**
+
+| 用途 | 使えるか |
+|---|---|
+| ログでの追跡・attribution | 使える（本来の用途） |
+| 「このセッション名なら許可」という認可 | **使えない**（呼び出し元が名乗り放題） |
+
+呼び出し元を認可レベルで区別したいなら **用途ごとにロールを分ける**。
+記録にあった「複数の呼び出し元が同じロールを使い始めると B 側で区別できなくなる。
+用途ごとにロールを分けるか、セッション名に識別子を入れる」という指摘は、
+「識別はセッション名、認可はロール」という切り分けを意味している。
+
+本構成が `<owner>-verify` を使うのは識別が目的。共有アカウント A から複数メンバーが
+呼んでも B 側のログで区別できるが、他メンバーが同じ名前を名乗ることは技術的に可能なので
+なりすまし防止にはならない。
+
+なお `sts:RoleSessionName` を信頼ポリシーの条件にすることは可能で、命名規約の強制
+（`${aws:username}` と一致させる等）には使える。ただし認可された principal に対する
+防御にはならない。
 
 ### 識別子の先頭 4 文字で由来が分かる
 
@@ -200,18 +250,81 @@ SigV4Auth(credentials, "execute-api", API_REGION).add_auth(request)
 
 ## 6. ExternalId とは（GCP に対応物がない）
 
-AssumeRole 時に要求できる共有シークレット。**confused deputy 問題**への対策。
+AssumeRole 時に、信頼ポリシーの `sts:ExternalId` 条件で要求できる任意の文字列。
+**confused deputy（混乱した代理人）問題**への対策。
 
-信頼ポリシーで「アカウント A から来てよい」と書くと、A の中の誰かが
-（意図しない経路で）このロールを使えてしまう余地が残る。ExternalId を条件に加えると、
-その値を知っている呼び出し元だけに絞れる。
+### なぜ必要か: confused deputy 問題
 
-注意点（記録より）:
-- ExternalId は AssumeRole の時点で消費されるので、**B 側の Lambda では受け取れない**
-- 本番運用では環境変数の平文ではなく SSM Parameter Store / Secrets Manager に置く
+典型例は「第三者の SaaS に自アカウントを触らせる」場面。
 
-本リポジトリでは B 側で `random_uuid` で自動生成し、Terraform の出力経由で A に渡している
-（両側に手で書くと値がずれて `AccessDenied` になるため）。
+監視 SaaS ベンダーに自分の AWS アカウントを見せたいとき、ベンダーのアカウントを
+信頼するロールを作る。しかしベンダーは他社も顧客に持っている。
+
+```
+                    ┌─────────────────────────────┐
+自社のロール  <─────┤ 監視 SaaS ベンダーのアカウント │
+                    │  顧客 X 用の処理            │
+他社のロール  <─────┤  顧客 Y 用の処理            │
+                    └─────────────────────────────┘
+```
+
+ベンダーのシステムが（設定ミスや攻撃で）「顧客 Y の依頼を処理しているつもりで
+自社のロール ARN を使う」状態になると、他社の指示で自社アカウントが操作されてしまう。
+ベンダーは信頼されている代理人（deputy）なので、AWS から見れば正当な AssumeRole に見える。
+
+ここで自社が「私のロールを引き受けるときは `abc-123` を必ず付けろ」と要求しておけば、
+その値を知らない経路からの AssumeRole は通らない。これが ExternalId。
+ベンダー側は顧客ごとに異なる ExternalId を管理する。
+
+### 「外部」ID という名前の由来
+
+自分のアカウントの内部で管理する識別子ではなく、**信頼関係の相手（外部）との間で
+取り決める識別子**という意味。パスワードのような認証情報ではなく、
+「どの取引先との関係か」を示すラベルに近い。ただし推測可能な値では意味がないので、
+UUID など推測困難な値にし、公開もしない。
+
+### ExternalId は「鍵」ではない（実測）
+
+`sts-experiments.md` の実験 2 で確認できる重要な点。
+
+**正しい ExternalId を持っていても、principal が許可されていなければ拒否される。**
+
+```
+$ aws sts assume-role --role-arn <B のロール> --role-session-name manual-test \
+    --external-id <正しい値>
+AccessDenied: User: arn:aws:sts::<A>:assumed-role/AWSReservedSSO_.../<自分>
+is not authorized to perform: sts:AssumeRole
+```
+
+信頼ポリシーの条件は **AND** で評価される。ExternalId は
+「principal の条件を満たした上で、さらに要求される追加条件」であって、
+これ単体で通れる鍵ではない。
+
+```json
+"Condition": {
+  "ArnLike":      { "aws:PrincipalArn": [...] },   ← これと
+  "StringEquals": { "sts:ExternalId": "..." }      ← これの両方を満たす必要がある
+}
+```
+
+### 本検証での扱い
+
+A と B は両方とも自社アカウントなので、厳密には confused deputy のリスクは低い。
+それでも前任者の記録が ExternalId を使った構成で成立を確認しているため、
+同じ構成を再現している。
+
+B 側で `random_uuid` により自動生成し、Terraform の `account_a_tfvars` 出力経由で
+A に渡している。両側に手で書くと値がずれて `AccessDenied` になるため。
+
+### 注意点
+
+- **ExternalId は AssumeRole の時点で消費される。** B 側の Lambda では受け取れない
+  （API Gateway のイベントにも載らない）ので、アプリケーションで再利用はできない
+- **本番運用では平文の環境変数に置かない。** 現状は Lambda 環境変数だが、
+  SSM Parameter Store / Secrets Manager へ移すのが無難
+- GCP に直接の対応物はない。GCP の SA impersonation は
+  「誰が impersonate できるか」を SA の IAM ポリシーで指定するのみで、
+  追加の共有識別子という概念を持たない
 
 ## 7. `owner` 変数は AWS の機能ではない
 
