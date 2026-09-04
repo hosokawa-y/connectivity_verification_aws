@@ -1,0 +1,15 @@
+# terraform/account-b を apply した後の出力をそのまま貼る。
+# scripts/deploy.sh を使う場合はこのファイルを自動生成するので手で作る必要はない。
+#   terraform -chdir=terraform/account-b output -raw account_a_tfvars
+project         = "xacct-verify"
+owner           = "yourname"
+target_role_arn = "arn:aws:iam::000000000000:role/xacct-verify-yourname-b-invoke-api-role"
+target_api_url  = "https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/dev/verify"
+api_region      = "ap-northeast-1"
+http_method     = "POST"
+external_id     = "00000000-0000-0000-0000-000000000000"
+
+# 既定値のままで良い場合は以下は不要
+# profile           = "account-a-profile"
+# region            = "ap-northeast-1"
+# role_session_name = "xacct-verify-a-caller"

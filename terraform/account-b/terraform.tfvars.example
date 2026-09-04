@@ -1,0 +1,13 @@
+# アカウント A (呼び出す側 = account-a-profile / 共有の検証環境) のアカウント ID
+account_a_id = "111111111111"
+
+# リソースの作成者識別子 (必須)。
+# アカウント A は開発メンバー共有なので、自分の名前を入れてリソースを識別できるようにする。
+# 英小文字・数字・ハイフンで 1〜21 文字。
+owner = "yourname"
+
+# 既定値のままで良い場合は以下は不要
+# profile     = "account-b-profile"    # 自分の AWS アカウントのプロファイル名に変える
+# region      = "ap-northeast-1"
+# external_id = ""              # 空なら random_uuid で自動生成
+# http_method = "POST"
